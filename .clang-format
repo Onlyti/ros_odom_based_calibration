@@ -1,0 +1,23 @@
+# Author: Jiwon Seok <pauljiwon96@gmail.com>
+#
+# requires clang-format version 7.0
+
+Language: Cpp
+BasedOnStyle: Google
+Standard: Cpp11
+
+AccessModifierOffset: -4
+BreakBeforeBraces: Custom
+BraceWrapping:
+  BeforeElse: true
+ColumnLimit: 120
+ContinuationIndentWidth: 8
+IncludeBlocks: Preserve
+IndentCaseLabels: false
+IndentWidth: 4
+MacroBlockBegin: "^MAPS_BEGIN_.*_DEFINITION$"
+MacroBlockEnd: "^MAPS_END_.*_DEFINITION$"
+MaxEmptyLinesToKeep: 1
+SpacesBeforeTrailingComments: 1
+UseTab: Never
+AlignTrailingComments: true
