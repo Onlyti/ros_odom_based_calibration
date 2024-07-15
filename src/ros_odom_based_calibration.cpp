@@ -14,15 +14,16 @@ Chansoo Kim, Paulo Resende, Benazouz Bradai, and Kichun Jo
 #include "ros_odom_based_calibration.hpp"
 
 RosOdomBasedCalibration::RosOdomBasedCalibration()
-    : deq_odom1_delta_(),
-      deq_odom2_delta_(),
+    : deq_odom1_accumed_(),
+      deq_odom2_accumed_(),
       deq_odom_pair_(),
       odom1_topic_(""),
       odom2_topic_(""),
       odom1_type_(OdomType::ODOM_TYPE_NAV_MSGS_ODOM),
       odom2_type_(OdomType::ODOM_TYPE_NAV_MSGS_ODOM),
       str_ini_path_(""),
-      cfg_i_que_max_size_(0),
+      cfg_i_que_input_max_size_(0),
+      cfg_i_que_keyframe_max_size_(0),
       cfg_d_keyframe_dist_threshold_m_(0.0),
       cfg_d_keyframe_rot_threshold_deg_(0.0),
       cfg_d_time_delay_odom1_to_odom2_sec_(0.0),
@@ -91,7 +92,6 @@ RosOdomBasedCalibration::~RosOdomBasedCalibration() {}
  * @return false
  */
 bool RosOdomBasedCalibration::RosParamRead() {
-    ros::NodeHandle nh;
     ros::NodeHandle nh_private("~");
 
     // Topic names
@@ -157,12 +157,20 @@ bool RosOdomBasedCalibration::RosParamRead() {
 bool RosOdomBasedCalibration::ParseINI() {
     if (ini_handler_.IsFileUpdated() == true) {
         // Que and keyframe parameters
-        if (ini_handler_.ParseConfig("Config", "cfg_i_que_max_size_", cfg_i_que_max_size_) == false) {
-            DebugPrintError("[RosOdomBasedCalibration] Failed to parse cfg_i_que_max_size_");
+        if (ini_handler_.ParseConfig("Config", "cfg_i_que_input_max_size_", cfg_i_que_input_max_size_) == false) {
+            DebugPrintError("[RosOdomBasedCalibration] Failed to parse cfg_i_que_input_max_size_");
             return false;
         }
-        if (cfg_i_que_max_size_ <= 0) {
-            DebugPrintError("[RosOdomBasedCalibration] cfg_i_que_max_size_ should be positive value");
+        if (cfg_i_que_input_max_size_ <= 0) {
+            DebugPrintError("[RosOdomBasedCalibration] cfg_i_que_input_max_size_ should be positive value");
+            return false;
+        }
+        if (ini_handler_.ParseConfig("Config", "cfg_i_que_keyframe_max_size_", cfg_i_que_keyframe_max_size_) == false) {
+            DebugPrintError("[RosOdomBasedCalibration] Failed to parse cfg_i_que_keyframe_max_size_");
+            return false;
+        }
+        if (cfg_i_que_keyframe_max_size_ <= 0) {
+            DebugPrintError("[RosOdomBasedCalibration] cfg_i_que_keyframe_max_size_ should be positive value");
             return false;
         }
         if (ini_handler_.ParseConfig("Config", "cfg_d_keyframe_dist_threshold_m_", cfg_d_keyframe_dist_threshold_m_) ==
@@ -231,15 +239,13 @@ void RosOdomBasedCalibration::Run() {
 }
 
 void RosOdomBasedCalibration::SyncOdomsTimeSync() {
-    // Synchronize odometry data
-    if (deq_odom1_delta_.empty() || deq_odom2_delta_.empty()) {
+    // Check if the queue is empty
+    if (deq_odom1_accumed_.size() < 2 || deq_odom2_accumed_.size() < 2) {
         DebugPrintWarn("[RosOdomBasedCalibration] Odom1 or Odom2 delta is empty");
         return;
     }
 
-    // Time synchronization
-
-
+    // Odom1 time check
 }
 
 void RosOdomBasedCalibration::FaultDataExclusion() {}
@@ -248,198 +254,201 @@ void RosOdomBasedCalibration::IterativeRotationEstimation() {}
 
 // ROS Callbacks
 void RosOdomBasedCalibration::CallbackOdom1Odom(const nav_msgs::Odometry::ConstPtr &msg) {
-    // Convert nav_msgs::Odometry (global frame odometry) to Eigen::Affine3d (difference odometry)
-    static nav_msgs::Odometry odom1_prev = *msg;
-    nav_msgs::Odometry odom1_curr = *msg;
-
-    // Determine delta odometry
-    Eigen::Affine3d odom1_delta;
-    odom1_delta.setIdentity();
-    // Translation
-    odom1_delta.translation() = Eigen::Vector3d(odom1_curr.pose.pose.position.x - odom1_prev.pose.pose.position.x,
-                                                odom1_curr.pose.pose.position.y - odom1_prev.pose.pose.position.y,
-                                                odom1_curr.pose.pose.position.z - odom1_prev.pose.pose.position.z);
-
-    // Rotation
-    Eigen::Quaterniond q_g_to_1_prev(odom1_prev.pose.pose.orientation.w, odom1_prev.pose.pose.orientation.x,
-                                     odom1_prev.pose.pose.orientation.y, odom1_prev.pose.pose.orientation.z);
-    Eigen::Quaterniond q_g_to_1_curr(odom1_curr.pose.pose.orientation.w, odom1_curr.pose.pose.orientation.x,
-                                     odom1_curr.pose.pose.orientation.y, odom1_curr.pose.pose.orientation.z);
-    Eigen::Quaterniond q_prev_to_curr = q_g_to_1_prev.inverse() * q_g_to_1_curr;
-    Eigen::AngleAxisd aa_prev_to_curr(q_prev_to_curr);
-    odom1_delta.rotate(aa_prev_to_curr);
-
-    // Push back
-    double time_sec = odom1_curr.header.stamp.toSec();
-    deq_odom1_delta_.push_back(std::make_pair(time_sec, odom1_delta));
-    QueLimiters(deq_odom1_delta_);
-    odom1_prev = odom1_curr;
+    geometry_msgs::PoseStamped pose_stamped;
+    pose_stamped.header = msg->header;
+    pose_stamped.pose = msg->pose.pose;
+    PoseStampedToInputQue(pose_stamped, deq_odom1_accumed_);
     return;
 }
 
 void RosOdomBasedCalibration::CallbackOdom1Twist(const geometry_msgs::TwistStamped::ConstPtr &msg) {
-    // Convert geometry_msgs::TwistStamped (global frame odometry) to Eigen::Affine3d (difference odometry)
-    static geometry_msgs::TwistStamped odom1_prev = *msg;
-    geometry_msgs::TwistStamped odom1_curr = *msg;
-
-    // Determine delta odometry
-    Eigen::Affine3d odom1_delta;
-    odom1_delta.setIdentity();
-    double delta_time_sec = time_sec - odom1_prev.header.stamp.toSec();
-    // Translation
-    double dx = (odom1_curr.twist.linear.x - odom1_prev.twist.linear.x) * delta_time_sec;
-    double dy = (odom1_curr.twist.linear.y - odom1_prev.twist.linear.y) * delta_time_sec;
-    double dz = (odom1_curr.twist.linear.z - odom1_prev.twist.linear.z) * delta_time_sec;
-    odom1_delta.translation() = Eigen::Vector3d(dx, dy, dz);
-
-    // Rotation
-    double droll = (odom1_curr.twist.angular.x - odom1_prev.twist.angular.x) * delta_time_sec;
-    double dpitch = (odom1_curr.twist.angular.y - odom1_prev.twist.angular.y) * delta_time_sec;
-    double dyaw = (odom1_curr.twist.angular.z - odom1_prev.twist.angular.z) * delta_time_sec;
-    // Convert Euler angle to quaternion
-    Eigen::Quaterniond q_prev_to_curr = Eigen::AngleAxisd(droll, Eigen::Vector3d::UnitX()) *
-                                        Eigen::AngleAxisd(dpitch, Eigen::Vector3d::UnitY()) *
-                                        Eigen::AngleAxisd(dyaw, Eigen::Vector3d::UnitZ());
-    Eigen::AngleAxisd aa_prev_to_curr(q_prev_to_curr);
-    odom1_delta.rotate(aa_prev_to_curr);
-
-    // Push back
-    double time_sec = odom1_curr.header.stamp.toSec();
-    deq_odom1_delta_.push_back(std::make_pair(time_sec, odom1_delta));
-    QueLimiters(deq_odom1_delta_);
-    odom1_prev = odom1_curr;
+    geometry_msgs::TwistStamped twist_stamped;
+    twist_stamped.header = msg->header;
+    twist_stamped.twist = msg->twist;
+    TwistStampedToInputQue(twist_stamped, deq_odom1_accumed_);
     return;
 }
 
 void RosOdomBasedCalibration::CallbackOdom1Pose(const geometry_msgs::PoseStamped::ConstPtr &msg) {
-    // Convert geometry_msgs::PoseStamped (global frame odometry) to Eigen::Affine3d (difference odometry)
-    static geometry_msgs::PoseStamped odom1_prev = *msg;
-    geometry_msgs::PoseStamped odom1_curr = *msg;
-
-    // Determine delta odometry
-    Eigen::Affine3d odom1_delta;
-    odom1_delta.setIdentity();
-    // Translation
-    odom1_delta.translation() = Eigen::Vector3d(odom1_curr.pose.position.x - odom1_prev.pose.position.x,
-                                                odom1_curr.pose.position.y - odom1_prev.pose.position.y,
-                                                odom1_curr.pose.position.z - odom1_prev.pose.position.z);
-
-    // Rotation
-    Eigen::Quaterniond q_g_to_1_prev(odom1_prev.pose.orientation.w, odom1_prev.pose.orientation.x,
-                                     odom1_prev.pose.orientation.y, odom1_prev.pose.orientation.z);
-    Eigen::Quaterniond q_g_to_1_curr(odom1_curr.pose.orientation.w, odom1_curr.pose.orientation.x,
-                                     odom1_curr.pose.orientation.y, odom1_curr.pose.orientation.z);
-    Eigen::Quaterniond q_prev_to_curr = q_g_to_1_prev.inverse() * q_g_to_1_curr;
-    Eigen::AngleAxisd aa_prev_to_curr(q_prev_to_curr);
-    odom1_delta.rotate(aa_prev_to_curr);
-
-    // Push back
-    double time_sec = odom1_curr.header.stamp.toSec();
-    deq_odom1_delta_.push_back(std::make_pair(time_sec, odom1_delta));
-    QueLimiters(deq_odom1_delta_);
-    odom1_prev = odom1_curr;
+    PoseStampedToInputQue(*msg, deq_odom1_accumed_);
     return;
 }
-
 void RosOdomBasedCalibration::CallbackOdom2Odom(const nav_msgs::Odometry::ConstPtr &msg) {
-    // Convert nav_msgs::Odometry (global frame odometry) to Eigen::Affine3d (difference odometry)
-    static nav_msgs::Odometry odom2_prev = *msg;
-    nav_msgs::Odometry odom2_curr = *msg;
-
-    // Determine delta odometry
-    Eigen::Affine3d odom2_delta;
-    odom2_delta.setIdentity();
-    // Translation
-    odom2_delta.translation() = Eigen::Vector3d(odom2_curr.pose.pose.position.x - odom2_prev.pose.pose.position.x,
-                                                odom2_curr.pose.pose.position.y - odom2_prev.pose.pose.position.y,
-                                                odom2_curr.pose.pose.position.z - odom2_prev.pose.pose.position.z);
-
-    // Rotation
-    Eigen::Quaterniond q_g_to_2_prev(odom2_prev.pose.pose.orientation.w, odom2_prev.pose.pose.orientation.x,
-                                     odom2_prev.pose.pose.orientation.y, odom2_prev.pose.pose.orientation.z);
-    Eigen::Quaterniond q_g_to_2_curr(odom2_curr.pose.pose.orientation.w, odom2_curr.pose.pose.orientation.x,
-                                     odom2_curr.pose.pose.orientation.y, odom2_curr.pose.pose.orientation.z);
-    Eigen::Quaterniond q_prev_to_curr = q_g_to_2_prev.inverse() * q_g_to_2_curr;
-    Eigen::AngleAxisd aa_prev_to_curr(q_prev_to_curr);
-    odom2_delta.rotate(aa_prev_to_curr);
-
-    // Push back
-    double time_sec = odom2_curr.header.stamp.toSec() - cfg_d_time_delay_odom1_to_odom2_sec_;
-    deq_odom2_delta_.push_back(std::make_pair(time_sec, odom2_delta));
-    QueLimiters(deq_odom2_delta_);
-    odom2_prev = odom2_curr;
+    geometry_msgs::PoseStamped pose_stamped;
+    pose_stamped.header = msg->header;
+    pose_stamped.pose = msg->pose.pose;
+    PoseStampedToInputQue(pose_stamped, deq_odom2_accumed_);
     return;
 }
 
 void RosOdomBasedCalibration::CallbackOdom2Twist(const geometry_msgs::TwistStamped::ConstPtr &msg) {
-    // Convert geometry_msgs::TwistStamped (global frame odometry) to Eigen::Affine3d (difference odometry)
-    static geometry_msgs::TwistStamped odom2_prev = *msg;
-    geometry_msgs::TwistStamped odom2_curr = *msg;
-
-    // Determine delta odometry
-    Eigen::Affine3d odom2_delta;
-    odom2_delta.setIdentity();
-    double delta_time_sec = time_sec - odom2_prev.header.stamp.toSec();
-    // Translation
-    double dx = (odom2_curr.twist.linear.x - odom2_prev.twist.linear.x) * delta_time_sec;
-    double dy = (odom2_curr.twist.linear.y - odom2_prev.twist.linear.y) * delta_time_sec;
-    double dz = (odom2_curr.twist.linear.z - odom2_prev.twist.linear.z) * delta_time_sec;
-    odom2_delta.translation() = Eigen::Vector3d(dx, dy, dz);
-
-    // Rotation
-    double droll = (odom2_curr.twist.angular.x - odom2_prev.twist.angular.x) * delta_time_sec;
-    double dpitch = (odom2_curr.twist.angular.y - odom2_prev.twist.angular.y) * delta_time_sec;
-    double dyaw = (odom2_curr.twist.angular.z - odom2_prev.twist.angular.z) * delta_time_sec;
-    // Convert Euler angle to quaternion
-    Eigen::Quaterniond q_prev_to_curr = Eigen::AngleAxisd(droll, Eigen::Vector3d::UnitX()) *
-                                        Eigen::AngleAxisd(dpitch, Eigen::Vector3d::UnitY()) *
-                                        Eigen::AngleAxisd(dyaw, Eigen::Vector3d::UnitZ());
-    Eigen::AngleAxisd aa_prev_to_curr(q_prev_to_curr);
-    odom2_delta.rotate(aa_prev_to_curr);
-
-    // Push back
-    double time_sec = odom2_curr.header.stamp.toSec() - cfg_d_time_delay_odom1_to_odom2_sec_;
-    deq_odom2_delta_.push_back(std::make_pair(time_sec, odom2_delta));
-    QueLimiters(deq_odom2_delta_);
-    odom2_prev = odom2_curr;
+    geometry_msgs::TwistStamped twist_stamped;
+    twist_stamped.header = msg->header;
+    twist_stamped.twist = msg->twist;
+    TwistStampedToInputQue(twist_stamped, deq_odom2_accumed_);
     return;
 }
 
 void RosOdomBasedCalibration::CallbackOdom2Pose(const geometry_msgs::PoseStamped::ConstPtr &msg) {
-    // Convert geometry_msgs::PoseStamped (global frame odometry) to Eigen::Affine3d (difference odometry)
-    static geometry_msgs::PoseStamped odom2_prev = *msg;
-    geometry_msgs::PoseStamped odom2_curr = *msg;
+    PoseStampedToInputQue(*msg, deq_odom2_accumed_);
+    return;
+}
 
-    // Determine delta odometry
-    Eigen::Affine3d odom2_delta;
-    odom2_delta.setIdentity();
-    // Translation
-    odom2_delta.translation() = Eigen::Vector3d(odom2_curr.pose.position.x - odom2_prev.pose.position.x,
-                                                odom2_curr.pose.position.y - odom2_prev.pose.position.y,
-                                                odom2_curr.pose.position.z - odom2_prev.pose.position.z);
+void RosOdomBasedCalibration::PoseStampedToInputQue(const geometry_msgs::PoseStamped &msg,
+                                                    std::deque<OdomMotion> &deq) {
+    static geometry_msgs::PoseStamped odom1_init = msg;
+    static Eigen::Affine3d odom1_tf_init = GetAffine3dFromPose(odom1_init.pose);
+    OdomMotion odom_motion_1_curr;
+    odom_motion_1_curr.time_sec = msg.header.stamp.toSec();
 
-    // Rotation
-    Eigen::Quaterniond q_g_to_2_prev(odom2_prev.pose.orientation.w, odom2_prev.pose.orientation.x,
-                                     odom2_prev.pose.orientation.y, odom2_prev.pose.orientation.z);
-    Eigen::Quaterniond q_g_to_2_curr(odom2_curr.pose.orientation.w, odom2_curr.pose.orientation.x,
-                                     odom2_curr.pose.orientation.y, odom2_curr.pose.orientation.z);
-    Eigen::Quaterniond q_prev_to_curr = q_g_to_2_prev.inverse() * q_g_to_2_curr;
-    Eigen::AngleAxisd aa_prev_to_curr(q_prev_to_curr);
-    odom2_delta.rotate(aa_prev_to_curr);
+    // Determine odometry from initial
+    geometry_msgs::PoseStamped odom1_curr = msg;
+    static geometry_msgs::PoseStamped odom1_prev = odom1_curr;
+    Eigen::Affine3d odom1_tf_curr = GetAffine3dFromPose(odom1_curr.pose);
+
+    Eigen::Affine3d odom1_tf_from_init = odom1_tf_init.inverse() * odom1_tf_curr;
+    static Eigen::Affine3d odom1_tf_prev = odom1_tf_from_init;
+
+    odom_motion_1_curr.odom = odom1_tf_from_init;
+
+    // Determine motion from previous
+    double delta_time_s = odom1_curr.header.stamp.toSec() - odom1_prev.header.stamp.toSec();
+    Eigen::VectorXd motion = Eigen::VectorXd::Zero(6);
+    if (delta_time_s > 0.0) {
+        Eigen::Affine3d odom1_delta = odom1_tf_prev.inverse() * odom1_tf_from_init;
+        double dx, dy, dz, droll, dpitch, dyaw;
+        GetTranslationAndEulerAngles(odom1_delta, dx, dy, dz, droll, dpitch, dyaw);
+        motion << dx / delta_time_s, dy / delta_time_s, dz / delta_time_s, droll / delta_time_s, dpitch / delta_time_s,
+                dyaw / delta_time_s;
+    }
+    else {
+        motion << 0.0, 0.0, 0.0, 0.0, 0.0, 0.0;
+    }
+    odom_motion_1_curr.motion = motion;
 
     // Push back
-    double time_sec = odom2_curr.header.stamp.toSec() - cfg_d_time_delay_odom1_to_odom2_sec_;
-    deq_odom2_delta_.push_back(std::make_pair(time_sec, odom2_delta));
-    QueLimiters(deq_odom2_delta_);
+    deq.push_back(odom_motion_1_curr);
+    QueLimiters(deq, cfg_i_que_input_max_size_);
+    odom1_prev = odom1_curr;
+    return;
+}
+
+void RosOdomBasedCalibration::TwistStampedToInputQue(const geometry_msgs::TwistStamped &msg,
+                                                     std::deque<OdomMotion> &deq) {
+    static geometry_msgs::TwistStamped odom2_prev = msg;
+    geometry_msgs::TwistStamped odom2_curr = msg;
+
+    // Determine delta odometry
+    static Eigen::Affine3d odom2_accumed = Eigen::Affine3d::Identity();
+    double delta_time_sec = odom2_curr.header.stamp.toSec() - odom2_prev.header.stamp.toSec();
+
+    // Translation
+    double vx = (odom2_curr.twist.linear.x + odom2_prev.twist.linear.x) / 2.0;
+    double vy = (odom2_curr.twist.linear.y + odom2_prev.twist.linear.y) / 2.0;
+    double vz = (odom2_curr.twist.linear.z + odom2_prev.twist.linear.z) / 2.0;
+
+    double dx = vx * delta_time_sec;
+    double dy = vy * delta_time_sec;
+    double dz = vz * delta_time_sec;
+
+    // Rotation
+    double wx = (odom2_curr.twist.angular.x + odom2_prev.twist.angular.x) / 2.0;
+    double wy = (odom2_curr.twist.angular.y + odom2_prev.twist.angular.y) / 2.0;
+    double wz = (odom2_curr.twist.angular.z + odom2_prev.twist.angular.z) / 2.0;
+
+    double droll = wx * delta_time_sec;
+    double dpitch = wy * delta_time_sec;
+    double dyaw = wz * delta_time_sec;
+
+    // Get transformation
+    Eigen::Affine3d odom2_delta;
+    odom2_delta.setIdentity();
+    GetTransformation(dx, dy, dz, droll, dpitch, dyaw, odom2_delta);
+    odom2_accumed = odom2_accumed * odom2_delta;
+
+    // Get motion
+    Eigen::VectorXd motion = Eigen::VectorXd::Zero(6);
+    motion << vx, vy, vz, wx, wy, wz;
+
+    // OdomMotion
+    OdomMotion odom2_motion;
+    odom2_motion.time_sec = odom2_curr.header.stamp.toSec();
+    odom2_motion.odom = odom2_accumed;
+    odom2_motion.motion = motion;
+
+    // Push back
+    deq.push_back(odom2_motion);
+    QueLimiters(deq, cfg_i_que_input_max_size_);
     odom2_prev = odom2_curr;
     return;
 }
 
-void RosOdomBasedCalibration::QueLimiters(std::deque<std::pair<double, Eigen::Affine3d>> &deq_odom_delta_){
+void RosOdomBasedCalibration::QueLimiters(std::deque<OdomMotion> &deq, int max_size) {
     // Limit the size of the queue
-    while (deq_odom_delta_.size() > cfg_i_que_max_size_) {
-        deq_odom_delta_.pop_front();
+    while (deq.size() > max_size) {
+        deq.pop_front();
     }
+}
+
+void RosOdomBasedCalibration::QueLimiters(std::deque<OdomPair> &deq, int max_size) {
+    // Limit the size of the queue
+    while (deq.size() > max_size) {
+        deq.pop_front();
+    }
+}
+
+void RosOdomBasedCalibration::GetTransformation(float x, float y, float z, float roll, float pitch, float yaw,
+                                                Eigen::Affine3f &t) {
+    Eigen::Affine3d t_d;
+    GetTransformation((double)x, (double)y, (double)z, (double)roll, (double)pitch, (double)yaw, t_d);
+    t = t_d.cast<float>();
+}
+
+void RosOdomBasedCalibration::GetTransformation(double x, double y, double z, double roll, double pitch, double yaw,
+                                                Eigen::Affine3d &t) {
+    double A = cosf64(yaw), B = sinf64(yaw), C = cosf64(pitch), D = sinf64(pitch), E = cosf64(roll), F = sinf64(roll),
+           DE = D * E, DF = D * F;
+    t(0, 0) = A * C;
+    t(0, 1) = A * DF - B * E;
+    t(0, 2) = B * F + A * DE;
+    t(0, 3) = x;
+    t(1, 0) = B * C;
+    t(1, 1) = A * E + B * DF;
+    t(1, 2) = B * DE - A * F;
+    t(1, 3) = y;
+    t(2, 0) = -D;
+    t(2, 1) = C * F;
+    t(2, 2) = C * E;
+    t(2, 3) = z;
+    t(3, 0) = 0;
+    t(3, 1) = 0;
+    t(3, 2) = 0;
+    t(3, 3) = 1;
+}
+
+void RosOdomBasedCalibration::PoseToAffine3d(const geometry_msgs::Pose &pose, Eigen::Affine3d &t) {
+    Eigen::Vector3d translation = Eigen::Vector3d(pose.position.x, pose.position.y, pose.position.z);
+    Eigen::Quaterniond q(pose.orientation.w, pose.orientation.x, pose.orientation.y, pose.orientation.z);
+    t.setIdentity();
+    t.translate(translation);
+    t.rotate(q);
+}
+
+Eigen::Affine3d RosOdomBasedCalibration::GetAffine3dFromPose(const geometry_msgs::Pose &pose) {
+    Eigen::Affine3d t;
+    t.setIdentity();
+    PoseToAffine3d(pose, t);
+    return t;
+}
+
+void RosOdomBasedCalibration::GetTranslationAndEulerAngles(const Eigen::Affine3d &t, double &x, double &y, double &z,
+                                                           double &roll, double &pitch, double &yaw) {
+    x = t(0, 3);
+    y = t(1, 3);
+    z = t(2, 3);
+    roll = atan2f64(t(2, 1), t(2, 2));
+    pitch = asinf64(-t(2, 0));
+    yaw = atan2f64(t(1, 0), t(0, 0));
 }
 
 // Main
