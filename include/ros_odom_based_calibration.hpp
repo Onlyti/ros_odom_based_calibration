@@ -84,6 +84,8 @@ public:
     Eigen::Affine3d GetAffine3dFromPose(const geometry_msgs::Pose &pose);
     void GetTranslationAndEulerAngles(const Eigen::Affine3d &t, double &x, double &y, double &z, double &roll,
                                       double &pitch, double &yaw);
+    Eigen::Affine3d GetIntpAffine3d(const Eigen::Affine3d &t1, double ratio);
+    Eigen::Affine3d GetIntpAffine3d(const Eigen::Affine3d &t1, const Eigen::Affine3d &t2, double ratio);
 
 public:
     ros::Subscriber rossub_odom1_;
@@ -98,7 +100,10 @@ public:
     std::deque<OdomMotion> deq_odom2_accumed_; // Target odometry frame
 
     // Keyframe
-    std::deque<std::pair<Eigen::Affine3d, Eigen::Affine3d>> deq_odom_pair_;
+    std::deque<OdomPair> deq_odom_pair_;
+    double last_keyframe_time_sec_;
+    Eigen::Affine3d last_keyframe_odom1_;
+    Eigen::Affine3d last_keyframe_odom2_;
     std::deque<double> deq_time_;
 
     // Estimated rotation

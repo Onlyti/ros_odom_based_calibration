@@ -245,7 +245,112 @@ void RosOdomBasedCalibration::SyncOdomsTimeSync() {
         return;
     }
 
-    // Odom1 time check
+    // Check start condition: odom1 front time > odom2 front time and odom1 front time < odom2 back time
+    static bool b_start_condition = false;
+    if (b_start_condition == false) {
+        while (deq_odom1_accumed_.size() > 1 && deq_odom2_accumed_.size() > 1) {
+            double odom1_front_time_sec = deq_odom1_accumed_.front().time_sec;
+            double odom2_front_time_sec = deq_odom2_accumed_.front().time_sec;
+            double odom2_back_time_sec = deq_odom2_accumed_.back().time_sec;
+
+            if (odom1_front_time_sec > odom2_front_time_sec && odom1_front_time_sec < odom2_back_time_sec) {
+                double odom2_second_time_sec = deq_odom2_accumed_.at(1).time_sec;
+
+                // Check if the time of odom1 is in between the time of odom2
+                while (odom1_front_time_sec > odom2_second_time_sec) {
+                    deq_odom2_accumed_.pop_front();
+
+                    if (deq_odom2_accumed_.size() < 2) {
+                        DebugPrintWarn("[RosOdomBasedCalibration] Odom2 time is not synchronized");
+                        return;
+                    }
+
+                    odom2_front_time_sec = deq_odom2_accumed_.front().time_sec;
+                    odom2_second_time_sec = deq_odom2_accumed_.at(1).time_sec;
+                }
+
+                b_start_condition = true;
+                last_keyframe_time_sec_ = odom1_front_time_sec;
+                last_keyframe_odom1_ = deq_odom1_accumed_.front().odom;
+
+                // Synchronize odom2 time from odom1 time with interpolation
+                double ratio =
+                        (odom1_front_time_sec - odom2_front_time_sec) / (odom2_second_time_sec - odom2_front_time_sec);
+                last_keyframe_odom2_ =
+                        GetIntpAffine3d(deq_odom2_accumed_.front().odom, deq_odom2_accumed_.at(1).odom, ratio);
+
+                break; // Exit the loop once the start condition is met
+            }
+            else {
+                DebugPrintWarn("[RosOdomBasedCalibration] Odom1 and Odom2 time is in synchronization progress");
+                deq_odom1_accumed_.pop_front();
+                return;
+            }
+        }
+    }
+
+    /* Keyframe Selection */
+    // Keyframe generation condition
+    // Find the odom1 last time smaller then odom2 last time (for interpolation)
+    double odom1_front_time = deq_odom1_accumed_.front().time_sec;
+    double odom1_last_time_sec = odom1_front_time;
+    int odom1_last_idx = 0;
+    for (int odom1_idx = deq_odom1_accumed_.size() - 1; odom1_idx >= 0; odom1_idx--) {
+        if (deq_odom1_accumed_.at(odom1_idx).time_sec < deq_odom2_accumed_.back().time_sec) {
+            odom1_last_time_sec = deq_odom1_accumed_.at(odom1_idx).time_sec;
+            odom1_last_idx = odom1_idx;
+            break;
+        }
+    }
+    // Check if the odom1 last time is found
+    if (odom1_last_time_sec <= odom1_front_time) {
+        DebugPrintWarn("[RosOdomBasedCalibration] Odom1 last time is not found");
+        return;
+    }
+
+    // Check difference between the last keyframe and the last odom1
+    Eigen::Affine3d odom1_delta_fron_last_kf = last_keyframe_odom1_.inverse() * deq_odom1_accumed_.back().odom;
+    double dx, dy, dz, droll, dpitch, dyaw;
+    GetTranslationAndEulerAngles(odom1_delta_fron_last_kf, dx, dy, dz, droll, dpitch, dyaw);
+    double d_trans_m = sqrt(dx * dx + dy * dy + dz * dz);
+    double d_rot_rad = sqrt(droll * droll + dpitch * dpitch + dyaw * dyaw);
+
+    // Check if the keyframe is needed
+    double th_tlans_m = cfg_d_keyframe_dist_threshold_m_;
+    double th_rot_rad = cfg_d_keyframe_rot_threshold_deg_ * M_PI / 180.0;
+    if (d_trans_m < th_tlans_m && d_rot_rad < th_rot_rad) {
+        // Keyframe generation condition is not satisfied
+        return;
+    }
+
+    // Check motion condition for keyframe: calibration operate when move fast.
+    for(int odom1_idx = 0; odom1_idx < odom1_last_idx; odom1_idx++) {
+        // Linear velocity slow check
+        double vx = deq_odom1_accumed_.at(odom1_idx).motion(0);
+        double vy = deq_odom1_accumed_.at(odom1_idx).motion(1);
+        double vz = deq_odom1_accumed_.at(odom1_idx).motion(2);
+
+        double liner_vel = sqrt(vx * vx + vy * vy + vz * vz);
+
+        if (liner_vel < 0.1) { // TBD: threshold need to be adjusted
+            DebugPrintWarn("[RosOdomBasedCalibration] Odom1 motion is not stable");
+            // TBD: Pop until the motion is increased
+            
+            return;
+        }
+
+        // Angular velocity slow check
+        double wx = deq_odom1_accumed_.at(odom1_idx).motion(3);
+        double wy = deq_odom1_accumed_.at(odom1_idx).motion(4);
+        double wz = deq_odom1_accumed_.at(odom1_idx).motion(5);
+
+        double angular_vel = sqrt(wx * wx + wy * wy + wz * wz);
+
+        if (angular_vel < 0.1) { // TBD: threshold need to be adjusted
+            DebugPrintWarn("[RosOdomBasedCalibration] Odom1 motion is not stable");
+            return;
+        }
+    }
 }
 
 void RosOdomBasedCalibration::FaultDataExclusion() {}
@@ -449,6 +554,32 @@ void RosOdomBasedCalibration::GetTranslationAndEulerAngles(const Eigen::Affine3d
     roll = atan2f64(t(2, 1), t(2, 2));
     pitch = asinf64(-t(2, 0));
     yaw = atan2f64(t(1, 0), t(0, 0));
+}
+
+Eigen::Affine3d RosOdomBasedCalibration::GetIntpAffine3d(const Eigen::Affine3d &t1, double ratio) {
+    // Get translation and euler angles
+    double x1, y1, z1, roll1, pitch1, yaw1;
+    GetTranslationAndEulerAngles(t1, x1, y1, z1, roll1, pitch1, yaw1);
+
+    // Get interpolated transformation
+    double x2 = x1 * ratio;
+    double y2 = y1 * ratio;
+    double z2 = z1 * ratio;
+    double roll2 = roll1 * ratio;
+    double pitch2 = pitch1 * ratio;
+    double yaw2 = yaw1 * ratio;
+
+    Eigen::Affine3d t;
+    GetTransformation(x2, y2, z2, roll2, pitch2, yaw2, t);
+    return t;
+}
+
+Eigen::Affine3d RosOdomBasedCalibration::GetIntpAffine3d(const Eigen::Affine3d &t1, const Eigen::Affine3d &t2,
+                                                         double ratio) {
+    Eigen::Affine3d t_1to2 = t1.inverse() * t2;
+    Eigen::Affine3d t_1tor = GetIntpAffine3d(t_1to2, ratio);
+    Eigen::Affine3d t_r = t1 * t_1tor;
+    return t_r;
 }
 
 // Main
