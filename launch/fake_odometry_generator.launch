@@ -1,0 +1,6 @@
+<launch>
+    <!-- Set the ROS package and node name -->
+    <node pkg="calibration_odom_based" type="ros_fake_odometry_generator" name="ros_fake_odometry_generator" output="screen">
+        <param name="ini_path" value="$(find calibration_odom_based)/config/fake_odom.ini" />
+    </node>
+</launch>

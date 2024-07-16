@@ -160,6 +160,16 @@ target_link_libraries(${PROJECT_NAME}
   ${EIGEN3_LIBRARIES}
 )
 
+add_executable(ros_fake_odometry_generator src/ros_fake_odometry_generator.cpp)
+add_dependencies(ros_fake_odometry_generator 
+  ${${PROJECT_NAME}_EXPORTED_TARGETS}
+  ${catkin_EXPORTED_TARGETS}
+)
+target_link_libraries(ros_fake_odometry_generator
+  ${catkin_LIBRARIES}
+  ${EIGEN3_LIBRARIES}
+)
+
 #############
 ## Install ##
 #############

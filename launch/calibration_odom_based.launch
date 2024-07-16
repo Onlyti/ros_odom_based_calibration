@@ -16,6 +16,6 @@
         <param name="odom2_type" value="ODOM_TYPE_NAV_MSGS_ODOM" />
 
         <!-- Set the path to the configuration file -->
-        <param name="ini_path" value="/path/to/ini/file.ini" />
+        <param name="ini_path" value="$(find calibration_odom_based)/config/odom_based_calibration.ini" />
     </node>
 </launch>
