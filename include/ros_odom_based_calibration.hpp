@@ -37,8 +37,13 @@ Chansoo Kim, Paulo Resende, Benazouz Bradai, and Kichun Jo
 // Defines & types
 enum OdomType { ODOM_TYPE_NAV_MSGS_ODOM = 0, ODOM_TYPE_GEO_MSGS_TWIST, ODOM_TYPE_GEO_MSGS_POSESTAMPED };
 struct OdomPair {
+    double time_sec;
+    double delta_time_sec;
     Eigen::Affine3d odom1;
     Eigen::Affine3d odom2;
+    Eigen::Affine3d odom2_for_roll;
+    Eigen::Affine3d odom2_for_pitch;
+    Eigen::Affine3d odom2_for_yaw;
     double t_error_m;
     double r_error_rad;
 };
@@ -61,7 +66,8 @@ public:
     void Run();
     void SyncOdomsTimeSync();
     void FaultDataExclusion();
-    void IterativeRotationEstimation();
+    void RotationEstimation();
+    void PublishCalibrationResult();
 
     // ROS Callbacks
     void CallbackOdom1Odom(const nav_msgs::Odometry::ConstPtr &msg);
@@ -86,6 +92,7 @@ public:
                                       double &pitch, double &yaw);
     Eigen::Affine3d GetIntpAffine3d(const Eigen::Affine3d &t1, double ratio);
     Eigen::Affine3d GetIntpAffine3d(const Eigen::Affine3d &t1, const Eigen::Affine3d &t2, double ratio);
+    geometry_msgs::Pose GetPoseFromAffine3d(const Eigen::Affine3d &t);
 
 public:
     ros::Subscriber rossub_odom1_;
@@ -101,7 +108,8 @@ public:
 
     // Keyframe
     std::deque<OdomPair> deq_odom_pair_;
-    double last_keyframe_time_sec_;
+    std::deque<OdomPair> deq_valid_odom_pair_;
+    double time_last_kf_sec_;
     Eigen::Affine3d last_keyframe_odom1_;
     Eigen::Affine3d last_keyframe_odom2_;
     std::deque<double> deq_time_;
@@ -126,14 +134,20 @@ public:
     int cfg_i_que_keyframe_max_size_;            // Keyframe sliding window
     double cfg_d_keyframe_dist_threshold_m_;     // Keyframe distance threshold
     double cfg_d_keyframe_rot_threshold_deg_;    // Keyframe rotation threshold
+    double cfg_d_keyframe_slow_threshold_mps_;   // Slow motion threshold. Nagative value means no threshold
     double cfg_d_time_delay_odom1_to_odom2_sec_; // time_delay = odom2_time - odom1_time,
                                                  // odom1_time = odom2_time - time_delay
-
+    double cfg_d_calib_update_rate_;             // Calibration update rate
     // Predefined translation calibration parameters
     double cfg_d_cal_t_x_m_;
     double cfg_d_cal_t_y_m_;
     double cfg_d_cal_t_z_m_;
-
+    bool cfg_b_cal_use_predef_roll_;
+    bool cfg_b_cal_use_predef_pitch_;
+    bool cfg_b_cal_use_predef_yaw_;
+    double cfg_d_cal_r_roll_deg_;
+    double cfg_d_cal_r_pitch_deg_;
+    double cfg_d_cal_r_yaw_deg_;
     // Fault Data Exclusion
     double cfg_d_fde_max_translation_error_threshold_m_;
     double cfg_d_fde_max_rotation_error_threshold_deg_;

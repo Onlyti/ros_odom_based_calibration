@@ -1,6 +1,6 @@
 <launch>
     <!-- Set the ROS package and node name -->
-    <node pkg="calibration_odom_based" type="ros_odom_based_calibration" name="ros_odom_based_calibration_node" output="screen">
+    <node pkg="calibration_odom_based" type="calibration_odom_based" name="calibration_odom_based" output="screen">
         <!-- Set any required ROS parameters -->
         <!-- Odom1 is reference frame for calibration -->
         <param name="odom1_topic" value="/odom1_topic" />
