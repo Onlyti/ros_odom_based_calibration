@@ -1,7 +1,7 @@
 # Calibration Odom Based
 두 오도메트리 또는 모션 데이터를 입력받아 두 오도메트리 간 회전 calibration 정보를 추정
 
-## 가능한 입력
+## Available input topic types
 - nav_msgs::Odometry
 - geometry_msgs::PoseStamped
 - geometry_msgs::TwistStamped
